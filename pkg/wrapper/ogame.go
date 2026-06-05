@@ -2656,6 +2656,30 @@ func (b *OGame) galaxyInfos(galaxy, system int64, opts ...Option) (ogame.SystemI
 }
 
 func (b *OGame) getGalaxyPage(galaxy int64, system int64, opts ...Option) (*GalaxyPageContent, error) {
+	if ogVersion, verr := version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); verr == nil {
+		if isVGreaterThanOrEqual(ogVersion, "13.0.0") {
+			// Get galaxy page content for the desired system.
+			by, err := b.postPageContent(url.Values{
+				"page":      {"ingame"},
+				"component": {"galaxy"},
+				"action":    {"fetchSolarSystemData"},
+				"asJson":    {"1"},
+			}, url.Values{
+				"galaxy": {strconv.Itoa(int(galaxy))},
+				"system": {strconv.Itoa(int(system))},
+			}, opts...)
+			if err != nil {
+				return nil, err
+			}
+			// Parse the json result, only defining the type for the GalaxyContent (Position and AvailableMissions properties).
+			var res GalaxyPageContent
+			if err = json.Unmarshal(by, &res); err != nil {
+				return nil, err
+			}
+			return &res, nil
+		}
+	}
+
 	// Get galaxy page content for the desired system.
 	by, err := b.postPageContent(url.Values{
 		"page":      {"ingame"},
@@ -3351,11 +3375,11 @@ type CheckTargetResponse struct {
 	} `json:"targetPlanet"`
 	Errors          []OGameError `json:"errors"`
 	TargetOk        bool         `json:"targetOk"`
+	Message         string       `json:"message"`
 	Components      []any        `json:"components"`
 	EmptySystems    int64        `json:"emptySystems"`
 	InactiveSystems int64        `json:"inactiveSystems"`
 	NewAjaxToken    string       `json:"newAjaxToken"`
-	Message         string       `json:"message"`
 }
 
 func (b *OGame) checkTarget(ships ogame.ShipsInfos, where ogame.Coordinate, opts ...Option) (out CheckTargetResponse, err error) {
@@ -3490,7 +3514,8 @@ func (b *OGame) sendFleet(celestialID ogame.CelestialID, ships ogame.ShipsInfos,
 	}
 
 	// Check
-	by1, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"checkTarget"}, "ajax": {"1"}, "asJson": {"1"}}, payload)
+	//by1, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"checkTarget"}, "ajax": {"1"}, "asJson": {"1"}}, payload)
+	by1, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"checkTarget"}, "asJson": {"1"}}, payload)
 	if err != nil {
 		return zeroFleet, err
 	}
