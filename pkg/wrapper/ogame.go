@@ -2632,11 +2632,13 @@ func (b *OGame) galaxyInfos(galaxy, system int64, opts ...Option) (ogame.SystemI
 		"system": {utils.FI64(system)},
 	}
 	vals := url.Values{"page": {"ingame"}, "component": {"galaxy"}, "action": {"fetchGalaxyContent"}, "ajax": {"1"}, "asJson": {"1"}}
-	if ogVersion, verr := version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); verr == nil {
+
+	if ogVersion, err := version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); err == nil {
 		if isVGreaterThanOrEqual(ogVersion, "13.0.0") {
 			vals = url.Values{"page": {"ingame"}, "component": {"galaxy"}, "action": {"fetchSolarSystemData"}, "asJson": {"1"}}
 		}
 	}
+
 	pageHTML, err := b.postPageContent(vals, payload, opts...)
 	if err != nil {
 		return res, err
@@ -2656,7 +2658,7 @@ func (b *OGame) galaxyInfos(galaxy, system int64, opts ...Option) (ogame.SystemI
 }
 
 func (b *OGame) getGalaxyPage(galaxy int64, system int64, opts ...Option) (*GalaxyPageContent, error) {
-	if ogVersion, verr := version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); verr == nil {
+	if ogVersion, err := version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); err == nil {
 		if isVGreaterThanOrEqual(ogVersion, "13.0.0") {
 			// Get galaxy page content for the desired system.
 			by, err := b.postPageContent(url.Values{
@@ -3393,6 +3395,7 @@ func (b *OGame) checkTarget(ships ogame.ShipsInfos, where ogame.Coordinate, opts
 	payload.Set("position", utils.FI64(where.Position))
 	payload.Set("type", utils.FI64(where.Type))
 	payload.Set("union", "0")
+	//by, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"checkTarget"}, "ajax": {"1"}, "asJson": {"1"}}, payload, opts...)
 	by, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"checkTarget"}, "asJson": {"1"}}, payload, opts...)
 	if err != nil {
 		return out, err
