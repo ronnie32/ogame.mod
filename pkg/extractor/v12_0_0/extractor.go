@@ -53,6 +53,11 @@ func (e *Extractor) ExtractHighscoreFromDoc(doc *goquery.Document) (ogame.Highsc
 	return extractHighscoreFromDoc(doc)
 }
 
+// ExtractOfferOfTheDay ...
+func (e *Extractor) ExtractOfferOfTheDay(pageHTML []byte) (int64, string, ogame.PlanetResources, ogame.Multiplier, error) {
+	return extractOfferOfTheDayFromJSON(pageHTML)
+}
+
 // ExtractChapter ...
 func (e *Extractor) ExtractChapter(pageHTML []byte) (ogame.Chapter, error) {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(pageHTML))

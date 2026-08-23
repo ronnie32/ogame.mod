@@ -3,15 +3,18 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"log"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/alaingilbert/ogame/pkg/device"
 	"github.com/alaingilbert/ogame/pkg/gameforge/solvers"
 	"github.com/alaingilbert/ogame/pkg/wrapper"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/urfave/cli/v3"
-	"log"
-	"os"
-	"strconv"
 )
 
 var version = "0.0.0"
@@ -104,6 +107,18 @@ func main() {
 			Value:   "lobby",
 			Sources: cli.EnvVars("OGAMED_LOBBY"),
 		},
+		&cli.IntFlag{
+			Name:    "manual-mode-timeout",
+			Usage:   "Manual mode inactivity timeout in seconds",
+			Value:   30,
+			Sources: cli.EnvVars("OGAMED_MANUAL_MODE_TIMEOUT"),
+		},
+		&cli.BoolFlag{
+			Name:    "hide-account-info-in-logs",
+			Usage:   "Redact player name/universe from ogamed's own debug/info log lines",
+			Value:   false,
+			Sources: cli.EnvVars("OGAMED_HIDE_ACCOUNT_INFO_IN_LOGS"),
+		},
 		&cli.StringFlag{
 			Name:    "api-new-hostname",
 			Usage:   "New OGame Hostname eg: https://someuniverse.example.com",
@@ -156,6 +171,75 @@ func main() {
 			Usage:   "Set the Device Name",
 			Value:   "device_name",
 			Sources: cli.EnvVars("OGAMED_DEVICENAME"),
+		}, &cli.StringFlag{
+			Name:    "device-system",
+			Usage:   `Set the Device System (Android, Windows, "MacOSX", Linux, iOS)`,
+			Value:   "windows",
+			Sources: cli.EnvVars("OGAMED_DEVICESYSTEM"),
+		},
+		&cli.StringFlag{
+			Name:    "device-browser",
+			Usage:   "Set the Device Browser (Chrome, Opera, Safari, Edge, Firefox)",
+			Value:   "Chrome",
+			Sources: cli.EnvVars("OGAMED_DEVICEBROWSER"),
+		},
+		&cli.IntFlag{
+			Name:    "device-memory",
+			Usage:   "Set the Device Memory",
+			Value:   8,
+			Sources: cli.EnvVars("OGAMED_DEVICEMEMORY"),
+		},
+		&cli.IntFlag{
+			Name:    "device-concurrency",
+			Usage:   "Set the Device Concurrency",
+			Value:   16,
+			Sources: cli.EnvVars("OGAMED_DEVICECONCURRENCY"),
+		},
+		&cli.IntFlag{
+			Name:    "device-color",
+			Usage:   "Set the Device Color depth",
+			Value:   16,
+			Sources: cli.EnvVars("OGAMED_DEVICECOLOR"),
+		},
+		&cli.IntFlag{
+			Name:    "device-width",
+			Usage:   "Set the Device Width",
+			Value:   1900,
+			Sources: cli.EnvVars("OGAMED_DEVICEWIDTH"),
+		},
+		&cli.IntFlag{
+			Name:    "device-height",
+			Usage:   "Set the Device Height",
+			Value:   900,
+			Sources: cli.EnvVars("OGAMED_DEVICHEIGHT"),
+		},
+		&cli.StringFlag{
+			Name:    "device-timezone",
+			Usage:   "Set the Device Timezone",
+			Value:   "Europe/Berlin",
+			Sources: cli.EnvVars("OGAMED_DEVICETIMEZONE"),
+		},
+		&cli.StringFlag{
+			Name:    "device-lang",
+			Usage:   "Set the Device Language",
+			Value:   "en-US,en",
+			Sources: cli.EnvVars("OGAMED_DEVICELANG"),
+		},
+		&cli.StringFlag{
+			Name:    "device-user-agent",
+			Usage:   "Set the Device User-Agent",
+			Value:   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+			Sources: cli.EnvVars("OGAMED_DEVICEUSERAGENT"),
+		},
+		&cli.StringFlag{
+			Name:    "telegram-solver-bot-token",
+			Usage:   "Telegram bot token for the human-in-the-loop captcha solver fallback",
+			Sources: cli.EnvVars("OGAMED_TELEGRAM_SOLVER_BOT_TOKEN"),
+		},
+		&cli.IntFlag{
+			Name:    "telegram-solver-chat-id",
+			Usage:   "Telegram chat id for the human-in-the-loop captcha solver fallback",
+			Sources: cli.EnvVars("OGAMED_TELEGRAM_SOLVER_CHAT_ID"),
 		},
 	}
 	app.Action = start
@@ -178,6 +262,8 @@ func start(ctx context.Context, c *cli.Command) error {
 	proxyType := c.String("proxy-type")
 	proxyLoginOnly := c.Bool("proxy-login-only")
 	lobby := c.String("lobby")
+	manualModeTimeoutSec := int(c.Int("manual-mode-timeout"))
+	hideAccountInfoInLogs := c.Bool("hide-account-info-in-logs")
 	apiNewHostname := c.String("api-new-hostname")
 	enableTLS := c.Bool("enable-tls")
 	tlsKeyFile := c.String("tls-key-file")
@@ -186,41 +272,108 @@ func start(ctx context.Context, c *cli.Command) error {
 	basicAuthPassword := c.String("basic-auth-password")
 	corsEnabled := c.Bool("cors-enabled")
 	njaApiKey := c.String("nja-api-key")
+	telegramSolverBotToken := c.String("telegram-solver-bot-token")
+	telegramSolverChatID := c.Int("telegram-solver-chat-id")
 	deviceName := c.String("device-name")
+	deviceSystem := c.String("device-system")
+	deviceBrowser := c.String("device-browser")
+	deviceMemory := c.Int("device-memory")
+	deviceConcurrency := c.Int("device-concurrency")
+	deviceColor := c.Int("device-color")
+	deviceWidth := c.Int("device-width")
+	deviceHeight := c.Int("device-height")
+	deviceTimezone := c.String("device-timezone")
+	deviceLang := c.String("device-lang")
+	deviceUserAgent := c.String("device-user-agent")
+	if username == "" || password == "" {
+		log.Fatal("Username or Password missing.")
+	}
+
+	deviceSystem = strings.ToLower(deviceSystem)
+	var deviceSystemParam device.Os
+	switch deviceSystem {
+	case "android":
+		deviceSystemParam = device.Android
+	case "windows":
+		deviceSystemParam = device.Windows
+	case "macosx":
+		deviceSystemParam = device.MacOSX
+	case "linux":
+		deviceSystemParam = device.Linux
+	case "ios":
+		deviceSystemParam = device.Ios
+	default:
+		deviceSystemParam = device.Windows
+	}
+
+	deviceBrowser = strings.ToLower(deviceBrowser)
+	var deviceBrowserParam device.Browser
+	switch deviceBrowser {
+	case "chrome":
+		deviceBrowserParam = device.Chrome
+	case "opera":
+		deviceBrowserParam = device.Opera
+	case "safari":
+		deviceBrowserParam = device.Safari
+	case "edge":
+		deviceBrowserParam = device.Edge
+	case "firefox":
+		deviceBrowserParam = device.Firefox
+	default:
+		deviceBrowserParam = device.Chrome
+	}
+
 	// TODO: put device config in flags & env variables
 	deviceInst, err := device.NewBuilder(deviceName).
-		SetOsName(device.Windows).
-		SetBrowserName(device.Chrome).
-		SetMemory(8).
-		SetHardwareConcurrency(16).
-		ScreenColorDepth(24).
-		SetScreenWidth(1900).
-		SetScreenHeight(900).
-		SetTimezone("America/Los_Angeles").
-		SetLanguages("en-US,en").
+		SetOsName(deviceSystemParam).
+		SetBrowserName(deviceBrowserParam).
+		SetMemory(int(deviceMemory)).
+		SetHardwareConcurrency(int(deviceConcurrency)).
+		ScreenColorDepth(int(deviceColor)).
+		SetScreenWidth(int(deviceWidth)).
+		SetScreenHeight(int(deviceHeight)).
+		SetTimezone(deviceTimezone).
+		SetLanguages(deviceLang).
+		SetUserAgent(deviceUserAgent).
 		Build()
 	if err != nil {
 		panic(err)
 	}
 
 	params := wrapper.Params{
-		Ctx:            ctx,
-		Device:         deviceInst,
-		Universe:       universe,
-		Username:       username,
-		Password:       password,
-		Lang:           language,
-		AutoLogin:      autoLogin,
-		Proxy:          proxyAddr,
-		ProxyUsername:  proxyUsername,
-		ProxyPassword:  proxyPassword,
-		ProxyType:      proxyType,
-		ProxyLoginOnly: proxyLoginOnly,
-		Lobby:          lobby,
-		APINewHostname: apiNewHostname,
+		Ctx:                   ctx,
+		Device:                deviceInst,
+		Universe:              universe,
+		Username:              username,
+		Password:              password,
+		Lang:                  language,
+		AutoLogin:             autoLogin,
+		Proxy:                 proxyAddr,
+		ProxyUsername:         proxyUsername,
+		ProxyPassword:         proxyPassword,
+		ProxyType:             proxyType,
+		ProxyLoginOnly:        proxyLoginOnly,
+		Lobby:                 lobby,
+		APINewHostname:        apiNewHostname,
+		HideAccountInfoInLogs: hideAccountInfoInLogs,
 	}
-	if njaApiKey != "" {
-		params.CaptchaSolver = solvers.NinjaSolver(njaApiKey)
+	hasNinja := njaApiKey != ""
+	hasTelegramSolver := telegramSolverBotToken != "" && telegramSolverChatID != 0
+	if hasNinja && hasTelegramSolver {
+		tbotSolver := TbotSolver(njaApiKey)
+		telegramSolver := solvers.TelegramSolver(telegramSolverBotToken, telegramSolverChatID)
+		params.CaptchaSolver = func(ctx context.Context, question, icons []byte) (int64, error) {
+			answer, err := tbotSolver(ctx, question, icons)
+			if err == nil {
+				return answer, nil
+			}
+			log.Println("Tbot solver failed, falling back to Telegram solver:", err)
+			return telegramSolver(ctx, question, icons)
+		}
+	} else if hasNinja {
+		params.CaptchaSolver = TbotSolver(njaApiKey)
+	} else if hasTelegramSolver {
+		params.CaptchaSolver = solvers.TelegramSolver(telegramSolverBotToken, telegramSolverChatID)
 	}
 
 	bot, err := wrapper.NewWithParams(params)
@@ -232,12 +385,17 @@ func start(ctx context.Context, c *cli.Command) error {
 	if corsEnabled {
 		e.Use(middleware.CORS())
 	}
+	var manualModeTimeout map[string]*time.Timer = map[string]*time.Timer{}
+	var botMap map[string]wrapper.Prioritizable = map[string]wrapper.Prioritizable{}
 	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(ctx echo.Context) error {
 			ctx.Set("bot", bot)
 			ctx.Set("version", version)
 			ctx.Set("commit", commit)
 			ctx.Set("date", date)
+			ctx.Set("manualModeTimeout", manualModeTimeout)
+			ctx.Set("manualModeTimeoutSec", manualModeTimeoutSec)
+			ctx.Set("botMap", botMap)
 			return next(ctx)
 		}
 	})
@@ -323,7 +481,6 @@ func start(ctx context.Context, c *cli.Command) error {
 	e.GET("/bot/planets/:planetID/resources-buildings", wrapper.GetResourcesBuildingsHandler)
 	e.GET("/bot/planets/:planetID/lifeform-buildings", wrapper.GetLfBuildingsHandler)
 	e.GET("/bot/planets/:planetID/lifeform-techs", wrapper.GetLfResearchHandler)
-	e.GET("/bot/planets/:planetID/artifacts", wrapper.GetArtifactsHandler)
 	e.GET("/bot/planets/:planetID/defence", wrapper.GetDefenseHandler)
 	e.GET("/bot/planets/:planetID/ships", wrapper.GetShipsHandler)
 	e.GET("/bot/planets/:planetID/facilities", wrapper.GetFacilitiesHandler)
@@ -343,22 +500,33 @@ func start(ctx context.Context, c *cli.Command) error {
 	e.POST("/bot/planets/:planetID/check-fleet", wrapper.CheckFleetHandler)
 	e.POST("/bot/planets/:planetID/send-fleet", wrapper.SendFleetHandler)
 	e.POST("/bot/planets/:planetID/send-discovery", wrapper.SendDiscoveryHandler)
+	e.POST("/bot/planets/:planetID/get-system-available-discovery", GetPositionsAvailableForDiscoveryFleet)
+	e.GET("/bot/planets/:planetID/get-available-discoveries", GetAvailableDiscoveries)
+
 	e.POST("/bot/planets/:planetID/send-ipm", wrapper.SendIPMHandler)
 	e.GET("/bot/moons/:moonID/phalanx/:galaxy/:system/:position", wrapper.PhalanxHandler)
 	e.POST("/bot/moons/:moonID/jump-gate", wrapper.JumpGateHandler)
 	e.GET("/game/allianceInfo.php", wrapper.GetAlliancePageContentHandler) // Example: //game/allianceInfo.php?allianceId=500127
 
+	// TBot Handlers
+	e.GET("/bot/alliance-class", GetAllianceClassHandler)
+	e.GET("/bot/planets/:planetID/lifeform-bonuses", GetLfBonusesTbotHandler)
+	e.GET("/bot/planets/:planetID/artifacts", wrapper.GetArtifactsHandler)
+	e.GET("/bot/expedition-messages", GetExpeditionMessagesHandler)
+	e.POST("/bot/toggle-manual-mode", PostToggleManualModeHandler)
+	e.GET("/bot/lfbonuses", GetLfBonusesHandler)
+
 	// Get/Post Page Content
-	e.GET("/game/index.php", wrapper.GetFromGameHandler)
-	e.POST("/game/index.php", wrapper.PostToGameHandler)
+	e.GET("/game/index.php", GetFromGameHandler)
+	e.POST("/game/index.php", PostToGameHandler)
 
 	// For AntiGame plugin
 	// Static content
-	e.GET("/cdn/*", wrapper.GetStaticHandler)
-	e.GET("/assets/css/*", wrapper.GetStaticHandler)
-	e.GET("/headerCache/*", wrapper.GetStaticHandler)
-	e.GET("/favicon.ico", wrapper.GetStaticHandler)
-	e.GET("/game/sw.js", wrapper.GetStaticHandler)
+	e.GET("/cdn/*", GetStaticHandler)
+	e.GET("/assets/css/*", GetStaticHandler)
+	e.GET("/headerCache/*", GetStaticHandler)
+	e.GET("/favicon.ico", GetStaticHandler)
+	e.GET("/game/sw.js", GetStaticHandler)
 
 	// JSON API
 	/*
@@ -367,8 +535,8 @@ func start(ctx context.Context, c *cli.Command) error {
 		/api/players.xml
 		/api/universe.xml
 	*/
-	e.GET("/api/*", wrapper.GetStaticHandler)
-	e.HEAD("/api/*", wrapper.GetStaticHEADHandler) // AntiGame uses this to check if the cached XML files need to be refreshed
+	e.GET("/api/*", GetStaticHandler)
+	e.HEAD("/api/*", GetStaticHEADHandler) // AntiGame uses this to check if the cached XML files need to be refreshed
 
 	if enableTLS {
 		log.Println("Enable TLS Support")

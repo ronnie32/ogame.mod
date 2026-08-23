@@ -25,6 +25,10 @@ build: bindata-prod
 build-linux: bindata-prod
 	GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.version=0.0.0" -o bot cmd/scripts/main.go
 
+build-ogamed:
+	go build -ldflags "-s -w -X main.version=$(VERSION)" -o bin/ogamed.exe ./cmd/ogamed
+
+
 cover:
 	@mkdir -p ./coverage
 	@for pkg in $(PKGS) ; do \
@@ -44,4 +48,4 @@ count:
 		| xargs wc -l \
 		| sort
 
-.PHONY: bindata-dev bindata-prod build build-linux serve test lint cover count
+.PHONY: bindata-dev bindata-prod build build-linux build-ogamed serve test lint cover count

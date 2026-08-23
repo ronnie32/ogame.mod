@@ -48,42 +48,43 @@ import (
 // multiple goroutines (thread-safe)
 type OGame struct {
 	sync.Mutex
-	isEnabledAtom        atomic.Bool // atomic, prevent auto re login if we manually logged out
-	isLoggedInAtom       atomic.Bool // atomic, prevent auto re login if we manually logged out
-	isConnectedAtom      atomic.Bool // atomic, either or not communication between the bot and OGame is possible
-	lockedAtom           atomic.Bool // atomic, bot state locked/unlocked
-	chatConnectedAtom    atomic.Bool // atomic, either or not the chat is connected
-	state                string      // keep name of the function that currently lock the bot
-	parentCtx            context.Context
-	ctx                  context.Context
-	cancelCtx            context.CancelFunc
-	stateChangeCallbacks []func(locked bool, actor string)
-	quiet                bool
-	universe             string
-	username             string
-	password             string
-	otpSecret            string
-	bearerToken          string
-	language             string
-	playerID             int64
-	lobby                string
-	server               gameforge.Server
-	logger               *log.Logger
-	chatCallbacks        []func(msg ogame.ChatMsg)
-	wsCallbacks          mtx.RWMutexMap[string, func([]byte)]
-	auctioneerCallbacks  []func(any)
-	interceptorCallbacks []func(method, url string, params, payload url.Values, pageHTML []byte)
-	closeChatCtx         context.Context
-	closeChatCancel      context.CancelFunc
-	ws                   *websocket.Conn
-	taskRunnerInst       *taskRunner.TaskRunner[*Prioritize]
-	loginWrapper         func(LoginFn) error
-	loginProxyTransport  http.RoundTripper
-	extractor            extractor.Extractor
-	apiNewHostname       string
-	captchaCallback      gameforge.CaptchaSolver
-	device               *device.Device
-	cache                struct {
+	isEnabledAtom         atomic.Bool // atomic, prevent auto re login if we manually logged out
+	isLoggedInAtom        atomic.Bool // atomic, prevent auto re login if we manually logged out
+	isConnectedAtom       atomic.Bool // atomic, either or not communication between the bot and OGame is possible
+	lockedAtom            atomic.Bool // atomic, bot state locked/unlocked
+	chatConnectedAtom     atomic.Bool // atomic, either or not the chat is connected
+	state                 string      // keep name of the function that currently lock the bot
+	parentCtx             context.Context
+	ctx                   context.Context
+	cancelCtx             context.CancelFunc
+	stateChangeCallbacks  []func(locked bool, actor string)
+	quiet                 bool
+	hideAccountInfoInLogs bool
+	universe              string
+	username              string
+	password              string
+	otpSecret             string
+	bearerToken           string
+	language              string
+	playerID              int64
+	lobby                 string
+	server                gameforge.Server
+	logger                *log.Logger
+	chatCallbacks         []func(msg ogame.ChatMsg)
+	wsCallbacks           mtx.RWMutexMap[string, func([]byte)]
+	auctioneerCallbacks   []func(any)
+	interceptorCallbacks  []func(method, url string, params, payload url.Values, pageHTML []byte)
+	closeChatCtx          context.Context
+	closeChatCancel       context.CancelFunc
+	ws                    *websocket.Conn
+	taskRunnerInst        *taskRunner.TaskRunner[*Prioritize]
+	loginWrapper          func(LoginFn) error
+	loginProxyTransport   http.RoundTripper
+	extractor             extractor.Extractor
+	apiNewHostname        string
+	captchaCallback       gameforge.CaptchaSolver
+	device                *device.Device
+	cache                 struct {
 		serverData            ServerData
 		location              *time.Location
 		player                ogame.UserInfos
@@ -111,27 +112,28 @@ type OGame struct {
 
 // Params parameters for more fine-grained initialization
 type Params struct {
-	Ctx            context.Context
-	Username       string
-	Password       string
-	BearerToken    string // Gameforge auth bearer token
-	OTPSecret      string
-	Universe       string
-	Lang           string
-	PlayerID       int64
-	AutoLogin      bool
-	Proxy          string
-	ProxyUsername  string
-	ProxyPassword  string
-	ProxyType      string
-	ProxyLoginOnly bool
-	TLSConfig      *tls.Config
-	Lobby          string
-	APINewHostname string
-	Device         *device.Device
-	CaptchaSolver  gameforge.CaptchaSolver
-	Logger         *log.Logger
-	Quiet          bool
+	Ctx                   context.Context
+	Username              string
+	Password              string
+	BearerToken           string // Gameforge auth bearer token
+	OTPSecret             string
+	Universe              string
+	Lang                  string
+	PlayerID              int64
+	AutoLogin             bool
+	Proxy                 string
+	ProxyUsername         string
+	ProxyPassword         string
+	ProxyType             string
+	ProxyLoginOnly        bool
+	TLSConfig             *tls.Config
+	Lobby                 string
+	APINewHostname        string
+	Device                *device.Device
+	CaptchaSolver         gameforge.CaptchaSolver
+	Logger                *log.Logger
+	Quiet                 bool
+	HideAccountInfoInLogs bool
 }
 
 // New creates a new instance of OGame wrapper.
@@ -181,6 +183,7 @@ func newWithParams(params Params) (*OGame, error) {
 	b.enable()
 	b.quiet = params.Quiet
 	b.logger = params.Logger
+	b.hideAccountInfoInLogs = params.HideAccountInfoInLogs
 
 	b.universe = params.Universe
 	b.setOGameCredentials(params.Username, params.Password, params.OTPSecret, params.BearerToken)
@@ -2518,9 +2521,9 @@ func (b *OGame) traderImportExportTrade(price int64, importToken string, planetR
 	// v12: {"message":"You have bought a container.","error":false,"item":{...},"newToken":"..."}
 	// v13: {"message":"...","success":true,"item":{...},"newAjaxToken":"..."} or {"message":"...","success":false,"errors":[{"message":"..."}]}
 	var result struct {
-		Message      string
-		Error        json.RawMessage
-		Errors       []struct {
+		Message string
+		Error   json.RawMessage
+		Errors  []struct {
 			Message string
 		}
 		NewAjaxToken string
@@ -2555,12 +2558,11 @@ func (b *OGame) traderImportExportTakeItem(token string) error {
 		return err
 	}
 	var result struct {
-		Message      string
-		Error        json.RawMessage
-		Errors       []struct {
+		Message string
+		Error   json.RawMessage
+		Errors  []struct {
 			Message string
 		}
-		NewAjaxToken string
 	}
 	if err := json.Unmarshal(pageHTML, &result); err != nil {
 		return err
@@ -2600,17 +2602,16 @@ func (b *OGame) buyOfferOfTheDay() error {
 		if err != nil {
 			return err
 		}
-		// v13 wraps the import/export page in a JSON envelope: {"content":{"trader":"<html>"},"newAjaxToken":"..."}
+		// v13 wraps the import/export page in a JSON envelope: {"content":{"trader":"<html>"},"newAjaxToken":"..."}.
+		// extractOfferOfTheDayFromJSON (pkg/extractor/v12_0_0) unwraps this envelope itself, so pageHTML
+		// is kept as the raw JSON below - only the token is pulled out here separately, since the
+		// extractor doesn't return it.
 		var importExportResp struct {
-			Content struct {
-				Trader string `json:"trader"`
-			} `json:"content"`
 			NewAjaxToken string `json:"newAjaxToken"`
 		}
 		if err = json.Unmarshal(pageHTML, &importExportResp); err != nil {
 			return err
 		}
-		pageHTML = []byte(importExportResp.Content.Trader)
 		v13ImportToken = importExportResp.NewAjaxToken
 	} else {
 		pageHTML, err = b.postPageContent(url.Values{"page": {"ajax"}, "component": {"traderimportexport"}}, url.Values{"show": {"importexport"}, "ajax": {"1"}})
@@ -2735,24 +2736,28 @@ func (b *OGame) galaxyInfos(galaxy, system int64, opts ...Option) (ogame.SystemI
 }
 
 func (b *OGame) getGalaxyPage(galaxy int64, system int64, opts ...Option) (*GalaxyPageContent, error) {
-	if ogVersion, err := version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); err == nil && isVGreaterThanOrEqual(ogVersion, "13.0.0") {
-		by, err := b.postPageContent(url.Values{
-			"page":      {"ingame"},
-			"component": {"galaxy"},
-			"action":    {"fetchSolarSystemData"},
-			"asJson":    {"1"},
-		}, url.Values{
-			"galaxy": {strconv.Itoa(int(galaxy))},
-			"system": {strconv.Itoa(int(system))},
-		}, opts...)
-		if err != nil {
-			return nil, err
+	if ogVersion, err := version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); err == nil {
+		if isVGreaterThanOrEqual(ogVersion, "13.0.0") {
+			// Get galaxy page content for the desired system.
+			by, err := b.postPageContent(url.Values{
+				"page":      {"ingame"},
+				"component": {"galaxy"},
+				"action":    {"fetchSolarSystemData"},
+				"asJson":    {"1"},
+			}, url.Values{
+				"galaxy": {strconv.Itoa(int(galaxy))},
+				"system": {strconv.Itoa(int(system))},
+			}, opts...)
+			if err != nil {
+				return nil, err
+			}
+			// Parse the json result, only defining the type for the GalaxyContent (Position and AvailableMissions properties).
+			var res GalaxyPageContent
+			if err = json.Unmarshal(by, &res); err != nil {
+				return nil, err
+			}
+			return &res, nil
 		}
-		var res GalaxyPageContent
-		if err = json.Unmarshal(by, &res); err != nil {
-			return nil, err
-		}
-		return &res, nil
 	}
 
 	// Get galaxy page content for the desired system.
@@ -2846,6 +2851,44 @@ func (b *OGame) getLfBonuses() (out ogame.LfBonuses, err error) {
 	}
 	b.cache.lfBonuses = &bonuses
 	return bonuses, nil
+}
+
+func (b *OGame) getLfBonusesForCelestial(celestialID ogame.CelestialID) (out ogame.LfBonuses, err error) {
+	page, err := getPage[parser.LfBonusesPage](b, ChangePlanet(celestialID))
+	if err != nil {
+		return
+	}
+	bonuses, err := page.ExtractLfBonuses()
+	if err != nil {
+		return
+	}
+	b.cache.lfBonuses = &bonuses
+	return bonuses, nil
+}
+
+func (b *OGame) getArtifacts(celestialID ogame.CelestialID) (collected int64, max int64, err error) {
+	pageHTML, err := b.getPageContent(url.Values{
+		"page":      {"ingame"},
+		"component": {"lfresearch"},
+		"cp":        {utils.FI64(celestialID)},
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	rgx := regexp.MustCompile(`id="slot01"\s+class="slot">\s*[^:<]*:\s*([\d.,]+)\s*/\s*([\d.,]+)`)
+	m := rgx.FindSubmatch(pageHTML)
+	if len(m) < 3 {
+		return 0, 0, errors.New("unable to find artifacts counter")
+	}
+	collected, err = utils.ParseI64(strings.NewReplacer(".", "", ",", "").Replace(string(m[1])))
+	if err != nil {
+		return 0, 0, err
+	}
+	max, err = utils.ParseI64(strings.NewReplacer(".", "", ",", "").Replace(string(m[2])))
+	if err != nil {
+		return 0, 0, err
+	}
+	return collected, max, nil
 }
 
 func (b *OGame) getCachedAllianceClass() (out ogame.AllianceClass, err error) {
@@ -3431,7 +3474,8 @@ func (b *OGame) checkTarget(ships ogame.ShipsInfos, where ogame.Coordinate, opts
 	payload.Set("position", utils.FI64(where.Position))
 	payload.Set("type", utils.FI64(where.Type))
 	payload.Set("union", "0")
-	by, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"checkTarget"}, "ajax": {"1"}, "asJson": {"1"}}, payload, opts...)
+	//by, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"checkTarget"}, "ajax": {"1"}, "asJson": {"1"}}, payload, opts...)
+	by, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"checkTarget"}, "asJson": {"1"}}, payload, opts...)
 	if err != nil {
 		return out, err
 	}
@@ -3552,7 +3596,8 @@ func (b *OGame) sendFleet(celestialID ogame.CelestialID, ships ogame.ShipsInfos,
 	}
 
 	// Check
-	by1, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"checkTarget"}, "ajax": {"1"}, "asJson": {"1"}}, payload)
+	//by1, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"checkTarget"}, "ajax": {"1"}, "asJson": {"1"}}, payload)
+	by1, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"checkTarget"}, "asJson": {"1"}}, payload)
 	if err != nil {
 		return zeroFleet, err
 	}

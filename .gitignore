@@ -1,4 +1,5 @@
 .envrc
+.env
 .idea
 dist
 cmd/scripts/bindata
@@ -8,5 +9,7 @@ cover.out
 vendor
 /ogame.code-workspace
 cmd/ogamed/bin
+/ogamed.exe
 /.vs
 *.png
+/bin

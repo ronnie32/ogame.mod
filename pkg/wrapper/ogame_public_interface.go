@@ -451,6 +451,10 @@ func (b *OGame) GetProduction(celestialID ogame.CelestialID) ([]ogame.Quantifiab
 	return b.WithPriority(taskRunner.Normal).GetProduction(celestialID)
 }
 
+func (b *OGame) GetArtifacts(celestialID ogame.CelestialID) (int64, int64, error) {
+	return b.WithPriority(taskRunner.Normal).GetArtifacts(celestialID)
+}
+
 // GetCachedResearch returns cached researches
 func (b *OGame) GetCachedResearch() ogame.Researches {
 	return b.WithPriority(taskRunner.Normal).GetCachedResearch()
@@ -459,6 +463,10 @@ func (b *OGame) GetCachedResearch() ogame.Researches {
 // GetLfBonuses returns cached lifeform bonuses
 func (b *OGame) GetLfBonuses() (ogame.LfBonuses, error) {
 	return b.WithPriority(taskRunner.Normal).GetLfBonuses()
+}
+
+func (b *OGame) GetLfBonusesForCelestial(celestialID ogame.CelestialID) (ogame.LfBonuses, error) {
+	return b.WithPriority(taskRunner.Normal).GetLfBonusesForCelestial(celestialID)
 }
 
 // GetCachedLfBonuses returns cached lifeform bonuses

@@ -244,6 +244,43 @@ func (f FilePersistor) Save(fprt *JsFingerprint) error {
 	return nil
 }
 
+// matchesConfiguredParams reports whether a previously persisted fingerprint
+// still matches the device params currently configured on the builder. If
+// any explicitly-set param differs, the fingerprint is considered stale.
+func (d *Builder) matchesConfiguredParams(fprt *JsFingerprint) bool {
+	if d.osName != "" && string(d.osName) != fprt.OsName {
+		return false
+	}
+	if d.browserName != "" && string(d.browserName) != fprt.BrowserName {
+		return false
+	}
+	if d.timezone != "" && d.timezone != fprt.Timezone {
+		return false
+	}
+	if d.languages != "" && d.languages != fprt.Languages {
+		return false
+	}
+	if d.memory != 0 && d.memory != fprt.DeviceMemory {
+		return false
+	}
+	if d.hardwareConcurrency != 0 && d.hardwareConcurrency != fprt.HardwareConcurrency {
+		return false
+	}
+	if d.screenColorDepth != 0 && d.screenColorDepth != fprt.ScreenColorDepth {
+		return false
+	}
+	if d.screenWidth != 0 && d.screenWidth != fprt.ScreenWidth {
+		return false
+	}
+	if d.screenHeight != 0 && d.screenHeight != fprt.ScreenHeight {
+		return false
+	}
+	if d.userAgent != "" && d.userAgent != fprt.UserAgent {
+		return false
+	}
+	return true
+}
+
 func (d *Builder) newFingerprint() (*JsFingerprint, error) {
 	if d.timezone == "" {
 		return nil, errors.New("timezone must be specified")
@@ -380,7 +417,13 @@ func (d *Builder) Build() (*Device, error) {
 	}
 
 	fprt, err := d.persistor.Load()
-	if err != nil {
+	if err == nil && fprt != nil && !d.matchesConfiguredParams(fprt) {
+		// Persisted fingerprint no longer matches the currently configured device
+		// params (instance_settings.json DeviceConf changed) - force a rebuild
+		// instead of silently keeping stale values forever.
+		fprt = nil
+	}
+	if fprt == nil {
 		fprt, err = d.newFingerprint()
 		if err != nil {
 			return nil, err

@@ -585,6 +585,90 @@ func SetResourceSettingsHandler(c echo.Context) error {
 }
 
 // GetLfBuildingsHandler ...
+func GetAllianceClassHandler(c echo.Context) error {
+	bot := c.Get("bot").(*OGame)
+	allianceClass, err := bot.GetCachedAllianceClass()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, ErrorResp(500, err.Error()))
+	}
+	return c.JSON(http.StatusOK, SuccessResp(allianceClass))
+}
+
+func GetLfBonusesNoParamHandler(c echo.Context) error {
+	bot := c.Get("bot").(*OGame)
+	lfBonuses, err := bot.GetLfBonuses()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, ErrorResp(500, err.Error()))
+	}
+	return c.JSON(http.StatusOK, SuccessResp(lfBonuses))
+}
+
+func GetAvailableDiscoveriesHandler(c echo.Context) error {
+	bot := c.Get("bot").(*OGame)
+	planetID, err := utils.ParseI64(c.Param("planetID"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResp(400, "invalid planet id"))
+	}
+	var opts Option
+	if planetID != 0 {
+		opts = ChangePlanet(ogame.CelestialID(planetID))
+	}
+	count, err := bot.GetAvailableDiscoveries(opts)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResp(400, err.Error()))
+	}
+	return c.JSON(http.StatusOK, SuccessResp(count))
+}
+
+func GetPositionsAvailableForDiscoveryFleetHandler(c echo.Context) error {
+	bot := c.Get("bot").(*OGame)
+	planetID, err := utils.ParseI64(c.Param("planetID"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResp(400, "invalid planet id"))
+	}
+	var opts Option
+	if planetID != 0 {
+		opts = ChangePlanet(ogame.CelestialID(planetID))
+	}
+	if err := c.Request().ParseForm(); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResp(400, "invalid form"))
+	}
+	where := ogame.Coordinate{Type: ogame.PlanetType}
+	for key, values := range c.Request().PostForm {
+		switch key {
+		case "galaxy":
+			galaxy, err := utils.ParseI64(values[0])
+			if err != nil {
+				return c.JSON(http.StatusBadRequest, ErrorResp(400, "invalid galaxy"))
+			}
+			where.Galaxy = galaxy
+		case "system":
+			system, err := utils.ParseI64(values[0])
+			if err != nil {
+				return c.JSON(http.StatusBadRequest, ErrorResp(400, "invalid system"))
+			}
+			where.System = system
+		}
+	}
+	coords, err := bot.GetPositionsAvailableForDiscoveryFleet(where.Galaxy, where.System, opts)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResp(400, err.Error()))
+	}
+	return c.JSON(http.StatusOK, SuccessResp(coords))
+}
+func GetLfBonusesHandler(c echo.Context) error {
+	bot := c.Get("bot").(*OGame)
+	planetID, err := utils.ParseI64(c.Param("planetID"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResp(400, "invalid planet id"))
+	}
+	res, err := bot.GetLfBonusesForCelestial(ogame.CelestialID(planetID))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, ErrorResp(500, err.Error()))
+	}
+	return c.JSON(http.StatusOK, SuccessResp(res))
+}
+
 func GetLfBuildingsHandler(c echo.Context) error {
 	bot := c.Get("bot").(*OGame)
 	planetID, err := utils.ParseI64(c.Param("planetID"))
@@ -610,29 +694,6 @@ func GetLfResearchHandler(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, ErrorResp(500, err.Error()))
 	}
 	return c.JSON(http.StatusOK, SuccessResp(res))
-}
-
-// GetArtifactsHandler returns the artifact stock and capacity reported by the
-// lifeform research page for the selected planet.
-func GetArtifactsHandler(c echo.Context) error {
-	bot := c.Get("bot").(*OGame)
-	planetID, err := utils.ParseI64(c.Param("planetID"))
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResp(400, "invalid planet id"))
-	}
-
-	details, err := bot.GetLfResearchDetails(ogame.CelestialID(planetID))
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, ErrorResp(500, err.Error()))
-	}
-
-	return c.JSON(http.StatusOK, SuccessResp(struct {
-		ArtifactsCollected int64 `json:"artifactsCollected"`
-		ArtifactsLimit     int64 `json:"artifactsLimit"`
-	}{
-		ArtifactsCollected: details.ArtefactsCollected,
-		ArtifactsLimit:     details.ArtefactsLimit,
-	}))
 }
 
 // GetResourcesBuildingsHandler ...
@@ -838,6 +899,22 @@ func GetProductionHandler(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, ErrorResp(500, err.Error()))
 	}
 	return c.JSON(http.StatusOK, SuccessResp(res))
+}
+
+func GetArtifactsHandler(c echo.Context) error {
+	bot := c.Get("bot").(*OGame)
+	planetID, err := utils.ParseI64(c.Param("planetID"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResp(400, "invalid planet id"))
+	}
+	collected, max, err := bot.GetArtifacts(ogame.CelestialID(planetID))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, ErrorResp(500, err.Error()))
+	}
+	return c.JSON(http.StatusOK, SuccessResp(struct {
+		Collected int64 `json:"collected"`
+		Max       int64 `json:"max"`
+	}{Collected: collected, Max: max}))
 }
 
 // ConstructionsBeingBuiltHandler ...
@@ -1674,7 +1751,7 @@ func GetCaptchaSolverHandler(c echo.Context) error {
 			bot.error(err)
 		}
 	}
-	return c.JSON(http.StatusOK, SuccessResp(nil))
+	return c.Redirect(http.StatusTemporaryRedirect, "/")
 }
 
 // CaptchaChallenge ...
