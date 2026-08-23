@@ -324,6 +324,12 @@ func (b *Prioritize) GetProduction(celestialID ogame.CelestialID) ([]ogame.Quant
 }
 
 // GetCachedResearch gets the player cached researches information
+func (b *Prioritize) GetArtifacts(celestialID ogame.CelestialID) (int64, int64, error) {
+	b.begin("GetArtifacts")
+	defer b.done()
+	return b.bot.getArtifacts(celestialID)
+}
+
 func (b *Prioritize) GetCachedResearch() ogame.Researches {
 	b.begin("GetCachedResearch")
 	defer b.done()
@@ -338,6 +344,12 @@ func (b *Prioritize) GetLfBonuses() (ogame.LfBonuses, error) {
 }
 
 // GetCachedLfBonuses gets the cached lifeform bonuses
+func (b *Prioritize) GetLfBonusesForCelestial(celestialID ogame.CelestialID) (ogame.LfBonuses, error) {
+	b.begin("GetLfBonusesForCelestial")
+	defer b.done()
+	return b.bot.getLfBonusesForCelestial(celestialID)
+}
+
 func (b *Prioritize) GetCachedLfBonuses() (ogame.LfBonuses, error) {
 	b.begin("GetCachedLfBonuses")
 	defer b.done()

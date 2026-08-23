@@ -1,6 +1,7 @@
 package v12_0_0
 
 import (
+	"encoding/json"
 	"errors"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/alaingilbert/clockwork"
@@ -11,6 +12,55 @@ import (
 	"strings"
 	"time"
 )
+
+// extractOfferOfTheDayFromJSON handles the v13+ schema, where the importexport
+// panel is returned as a JSON envelope (content.trader holds the HTML fragment)
+// and the trade token is the envelope's newAjaxToken, since the fragment no
+// longer embeds a "var token" script variable.
+func extractOfferOfTheDayFromJSON(pageHTML []byte) (price int64, importToken string, planetResources ogame.PlanetResources, multiplier ogame.Multiplier, err error) {
+	var wrapper struct {
+		Content struct {
+			Trader string `json:"trader"`
+		} `json:"content"`
+		NewAjaxToken string `json:"newAjaxToken"`
+	}
+	if err = json.Unmarshal(pageHTML, &wrapper); err != nil {
+		return
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(wrapper.Content.Trader))
+	if err != nil {
+		return
+	}
+
+	s := doc.Find("div.js_import_price")
+	if s.Size() == 0 {
+		err = errors.New("failed to extract offer of the day price")
+		return
+	}
+	price = utils.ParseInt(s.Text())
+
+	script := doc.Find("script").Text()
+	m := regexp.MustCompile(`var planetResources\s?=\s?({[^;]*});`).FindStringSubmatch(script)
+	if len(m) != 2 {
+		err = errors.New("failed to extract offer of the day raw planet resources")
+		return
+	}
+	if err = json.Unmarshal([]byte(m[1]), &planetResources); err != nil {
+		return
+	}
+
+	m = regexp.MustCompile(`var multiplier\s?=\s?({[^;]*});`).FindStringSubmatch(script)
+	if len(m) != 2 {
+		err = errors.New("failed to extract offer of the day raw multiplier")
+		return
+	}
+	if err = json.Unmarshal([]byte(m[1]), &multiplier); err != nil {
+		return
+	}
+
+	importToken = wrapper.NewAjaxToken
+	return
+}
 
 func extractServerTimeFromDoc(doc *goquery.Document, clock clockwork.Clock) (time.Time, error) {
 	txt := doc.Find("div.OGameClock").First().Text()

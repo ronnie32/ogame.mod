@@ -17,8 +17,6 @@ import (
 	"github.com/dop251/goja"
 )
 
-const powCaptchaBaseURL = "https://pow-captcha.gameforge.com"
-
 // PowCaptchaProbe is a single browser instrumentation probe from the .pow file.
 type PowCaptchaProbe struct {
 	ID   string `json:"id"`

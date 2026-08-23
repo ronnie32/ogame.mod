@@ -215,7 +215,11 @@ func (b *OGame) loginPart3(userAccount gameforge.Account, page *parser.OverviewP
 		b.error("failed to parse ogame version: " + err.Error())
 	}
 
-	b.debug("logged in as " + userAccount.Name + " on " + b.universe + "-" + b.language)
+	if b.hideAccountInfoInLogs {
+		b.debug("logged in as Player Name on Server Name-" + b.language)
+	} else {
+		b.debug("logged in as " + userAccount.Name + " on " + b.universe + "-" + b.language)
+	}
 
 	b.debug("extract information from html")
 	b.cache.ogameSession = page.ExtractOGameSession()
