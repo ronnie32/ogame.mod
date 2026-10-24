@@ -974,3 +974,9 @@ func (b *OGame) SetLfBonuses(lfBonuses ogame.LfBonuses) {
 func (b *OGame) SoftLogout() {
 	b.softLogout()
 }
+
+// SendSystemDiscoveryFleetBounded dispatches only positions covered by the caller's
+// fleet reservation, preserving partial proven results and stopping on uncertainty.
+func (b *OGame) SendSystemDiscoveryFleetBounded(celestialID ogame.CelestialID, galaxy, system, maxFleets int64, positions []int64, options ...Option) (SystemDiscoveryResult, error) {
+	return b.withPriority(taskRunner.Normal).SendSystemDiscoveryFleetBounded(celestialID, galaxy, system, maxFleets, positions, options...)
+}

@@ -458,6 +458,19 @@ func extractExpeditionMessagesFromDoc(doc *goquery.Document, location *time.Loca
 
 func extractLfBonusesFromDoc(doc *goquery.Document) (ogame.LfBonuses, error) {
 	b := ogame.NewLfBonuses()
+	for _, item := range doc.Find("lifeform-level-bonuses lifeform-item").EachIter() {
+		icon := item.Find(".lifeform-item-icon")
+		level, err := utils.ParseI64(strings.TrimSpace(item.Find(".currentlevel strong").Text()))
+		if err != nil || level < 0 {
+			continue
+		}
+		for _, lifeform := range []ogame.LifeformType{ogame.Humans, ogame.Rocktal, ogame.Mechas, ogame.Kaelesh} {
+			if icon.HasClass("lifeform" + utils.FI64(int64(lifeform))) {
+				b.LifeformLevels[lifeform] = level
+				break
+			}
+		}
+	}
 	if extractLfBonusesV13(doc, b) {
 		return *b, nil
 	}
@@ -528,6 +541,9 @@ func assignBonusValue(s *goquery.Selection, b *ogame.LfBonuses, category string,
 	case "Resources":
 		if subcategory == "Expedition" {
 			extractResourcesExpeditionBonus(s, b)
+		}
+		if subcategory == "0" || subcategory == "1" || subcategory == "2" {
+			extractResourcesProductionBonus(s, b, subcategory)
 		}
 	case "Characterclasses":
 		if subcategory == "3" {
@@ -643,4 +659,16 @@ func extractPhalanxNewToken(pageHTML []byte) (string, error) {
 	}
 	token := doc.Find("a.refreshPhalanxLink").AttrOr("data-overlay-token", "")
 	return token, nil
+}
+
+func extractResourcesProductionBonus(s *goquery.Selection, l *ogame.LfBonuses, x string) {
+	txt := s.Find("div.subCategoryBonus").First().Text()
+	switch x {
+	case "0":
+		l.LfResourceBonuses.ResourcesMetalProduction = extractBonusFromStringPercentage(txt)
+	case "1":
+		l.LfResourceBonuses.ResourcesCrystalProduction = extractBonusFromStringPercentage(txt)
+	case "2":
+		l.LfResourceBonuses.ResourcesDeuteriumProduction = extractBonusFromStringPercentage(txt)
+	}
 }

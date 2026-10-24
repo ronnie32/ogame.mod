@@ -1003,7 +1003,7 @@ func isNormalDiscoveryRedirect(method string, vals url.Values, statusCode int, l
 	}
 }
 
-func (b *OGame) execRequest(method, finalURL string, payload, vals url.Values) ([]byte, requestResponse, error) {
+func (b *OGame) execRequest(method, finalURL string, payload, vals url.Values, requireSuccessfulHTTP bool) ([]byte, requestResponse, error) {
 	var response requestResponse
 	var body io.Reader
 	if method == http.MethodPost {
@@ -1038,6 +1038,15 @@ func (b *OGame) execRequest(method, finalURL string, payload, vals url.Values) (
 	}
 	defer resp.Body.Close()
 
+	if requireSuccessfulHTTP && (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) {
+		return nil, response, fmt.Errorf("discovery movement read returned HTTP %d", resp.StatusCode)
+	}
+	if isDiscoveryAction(method, vals) && resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusFound && isInternalDiscoveryRedirect(resp.Header.Get("Location"), finalURL, b.cache.serverURL) {
+			return nil, response, &requestRedirectError{statusCode: resp.StatusCode, location: resp.Header.Get("Location"), normal: true}
+		}
+		return nil, response, fmt.Errorf("discovery dispatch returned HTTP %d; dispatch outcome is unconfirmed", resp.StatusCode)
+	}
 	response = requestResponse{
 		statusCode: resp.StatusCode,
 		location:   resp.Header.Get("Location"),
@@ -1134,6 +1143,10 @@ func (b *OGame) postPageContent(vals, payload url.Values, opts ...Option) ([]byt
 }
 
 func (b *OGame) pageContent(method string, vals, payload url.Values, opts ...Option) ([]byte, error) {
+	return b.pageContentWithHTTPStatus(method, vals, payload, false, opts...)
+}
+
+func (b *OGame) pageContentWithHTTPStatus(method string, vals, payload url.Values, requireSuccessfulHTTP bool, opts ...Option) ([]byte, error) {
 	cfg := getOptions(opts...)
 
 	if err := b.preRequestChecks(); err != nil {
@@ -1150,7 +1163,7 @@ func (b *OGame) pageContent(method string, vals, payload url.Values, opts ...Opt
 	var pageHTMLBytes []byte
 
 	clb := func() (err error) {
-		if method == http.MethodPost || vals.Get("component") == "support" {
+		if method == http.MethodPost || vals.Get("component") == "support" || requireSuccessfulHTTP {
 			// Needs to be inside the withRetry, so if we need to re-login the redirect is back for the login call
 			// Prevent redirect (301) https://stackoverflow.com/a/38150816/4196220
 			// Content returned on "support" endpoint:
@@ -1165,7 +1178,7 @@ func (b *OGame) pageContent(method string, vals, payload url.Values, opts ...Opt
 		}
 
 		var response requestResponse
-		pageHTMLBytes, response, err = b.execRequest(method, finalURL, payload, vals)
+		pageHTMLBytes, response, err = b.execRequest(method, finalURL, payload, vals, requireSuccessfulHTTP)
 		if err != nil {
 			return err
 		}
@@ -1841,24 +1854,27 @@ func (b *OGame) cancelFleet(fleetID ogame.FleetID) error {
 	if err != nil {
 		return err
 	}
+	var ogVersion *version.Version
+	if ogVersion, err = version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); err == nil {
+		if isVGreaterThanOrEqual(ogVersion, "13.0.0") {
+			token, err := page.ExtractToken()
+			if err != nil {
+				return err
+			}
+			response, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"movement"}, "action": {"recallFleet"}, "fleetId": {fleetID.String()}, "asJson": {"1"}}, url.Values{"token": {token}})
+			if err != nil {
+				return err
+			}
+			return validateAjaxResult(response, "fleet recall", true)
+		}
+
+	}
+
 	token, err := page.ExtractCancelFleetToken(fleetID)
 	if err != nil {
 		return err
 	}
-	if recallAction := page.GetDoc().Find("div#fleet"+utils.FI64(fleetID)+" a.icon_link").AttrOr("data-recall-action", ""); recallAction != "" {
-		// v13: recall via action=recallFleet&fleetId=&asJson=1
-		if _, err = b.getPageContent(url.Values{
-			"page":      {"ingame"},
-			"component": {"movement"},
-			"action":    {"recallFleet"},
-			"fleetId":   {fleetID.String()},
-			"asJson":    {"1"},
-			"token":     {token},
-		}); err != nil {
-			return err
-		}
-		return nil
-	}
+
 	if _, err = b.getPageContent(url.Values{"page": {"ingame"}, "component": {"movement"}, "return": {fleetID.String()}, "token": {token}}); err != nil {
 		return err
 	}
@@ -2316,7 +2332,16 @@ func (b *OGame) highscore(category, typ, page int64) (out ogame.Highscore, err e
 		"site":     {utils.FI64(page)},
 	}
 	payload := url.Values{}
-	pageHTML, err := b.postPageContent(vals, payload)
+	var pageHTML []byte
+	if ogVersion, versionErr := version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); versionErr == nil && isVGreaterThanOrEqual(ogVersion, "13.0.0") {
+		// OGame 13 removed highscoreContent; the full component contains
+		// the same ranking table and its pagination metadata.
+		vals.Set("page", "ingame")
+		vals.Set("component", HighscorePageName)
+		pageHTML, err = b.getPageContent(vals)
+	} else {
+		pageHTML, err = b.postPageContent(vals, payload)
+	}
 	if err != nil {
 		return out, err
 	}
@@ -2835,119 +2860,100 @@ func calcResources(price int64, planetResources ogame.PlanetResources, multiplie
 }
 
 func (b *OGame) traderImportExportTrade(price int64, importToken string, planetResources ogame.PlanetResources, multiplier ogame.Multiplier) (string, error) {
-	payload := calcResources(price, planetResources, multiplier)
-	payload.Add("bid[honor]", "0")
-	payload.Add("token", importToken)
-	var pageHTML1 []byte
-	var err error
-	if isOgameV13(b) {
-		payload.Add("action", "importExportTrade")
-		pageHTML1, err = b.postPageContent(url.Values{"page": {"ingame"}, "component": {"trader"}, "asJson": {"1"}}, payload)
-	} else {
-		payload.Add("action", "trade")
-		payload.Add("ajax", "1")
-		pageHTML1, err = b.postPageContent(url.Values{"page": {"ajax"}, "component": {"traderimportexport"}, "ajax": {"1"}, "action": {"trade"}, "asJson": {"1"}}, payload)
+	if strings.TrimSpace(importToken) == "" {
+		return "", errors.New("import token missing")
 	}
+	payload := calcResources(price, planetResources, multiplier)
+	payload.Set("bid[honor]", "0")
+	payload.Set("token", importToken)
+	vals := url.Values{"page": {"ajax"}, "component": {"traderimportexport"}, "ajax": {"1"}, "action": {"trade"}, "asJson": {"1"}}
+	payload.Set("action", "trade")
+	payload.Set("ajax", "1")
+	modern := isOgameV13(b)
+	if modern {
+		vals = url.Values{"page": {"ingame"}, "component": {"trader"}, "asJson": {"1"}}
+		payload.Set("action", "importExportTrade")
+		payload.Del("ajax")
+	}
+	body, err := b.postPageContent(vals, payload)
 	if err != nil {
 		return "", err
 	}
-	// v12: {"message":"You have bought a container.","error":false,"item":{...},"newToken":"..."}
-	// v13: {"message":"...","success":true,"item":{...},"newAjaxToken":"..."} or {"message":"...","success":false,"errors":[{"message":"..."}]}
-	var result struct {
-		Message string
-		Error   json.RawMessage
-		Errors  []struct {
-			Message string
-		}
-		NewAjaxToken string
-	}
-	if err := json.Unmarshal(pageHTML1, &result); err != nil {
+	if err = validateAjaxResult(body, "import/export trade", modern); err != nil {
 		return "", err
 	}
-	if len(result.Error) > 0 && string(result.Error) != "false" && string(result.Error) != "null" {
-		return "", errors.New(result.Message)
+	var result struct {
+		NewAjaxToken string `json:"newAjaxToken"`
+		NewToken     string `json:"newToken"`
 	}
-	if len(result.Errors) > 0 {
-		return "", errors.New(result.Errors[0].Message)
+	if err = json.Unmarshal(body, &result); err != nil {
+		return "", err
 	}
-	return result.NewAjaxToken, nil
+	token := result.NewAjaxToken
+	if !modern && token == "" {
+		token = result.NewToken
+	}
+	if strings.TrimSpace(token) == "" {
+		return "", errors.New("import/export next token missing")
+	}
+	return token, nil
 }
 
 func (b *OGame) traderImportExportTakeItem(token string) error {
-	var pageHTML []byte
-	var err error
-	if isOgameV13(b) {
-		pageHTML, err = b.postPageContent(
-			url.Values{"page": {"ingame"}, "component": {"trader"}, "asJson": {"1"}},
-			url.Values{"action": {"importExportTakeItem"}, "token": {token}},
-		)
-	} else {
-		pageHTML, err = b.postPageContent(
-			url.Values{"page": {"ajax"}, "component": {"traderimportexport"}, "ajax": {"1"}, "action": {"takeItem"}, "asJson": {"1"}},
-			url.Values{"action": {"takeItem"}, "token": {token}, "ajax": {"1"}},
-		)
+	if strings.TrimSpace(token) == "" {
+		return errors.New("import/export take token missing")
 	}
+	modern := isOgameV13(b)
+	vals := url.Values{"page": {"ajax"}, "component": {"traderimportexport"}, "ajax": {"1"}, "action": {"takeItem"}, "asJson": {"1"}}
+	payload := url.Values{"action": {"takeItem"}, "token": {token}, "ajax": {"1"}}
+	if modern {
+		vals = url.Values{"page": {"ingame"}, "component": {"trader"}, "asJson": {"1"}}
+		payload = url.Values{"action": {"importExportTakeItem"}, "token": {token}}
+	}
+	body, err := b.postPageContent(vals, payload)
 	if err != nil {
 		return err
 	}
-	var result struct {
-		Message string
-		Error   json.RawMessage
-		Errors  []struct {
-			Message string
-		}
-		NewAjaxToken string
-	}
-	if err := json.Unmarshal(pageHTML, &result); err != nil {
-		return err
-	}
-	if len(result.Error) > 0 && string(result.Error) != "false" && string(result.Error) != "null" {
-		return errors.New(result.Message)
-	}
-	if len(result.Errors) > 0 {
-		return errors.New(result.Errors[0].Message)
-	}
-	// v12: {"error":false,"message":"You have accepted the offer and put the item in your inventory.","item":{...},"newToken":"..."}
-	// v13: {"message":"...","success":true,"item":{...},"newAjaxToken":"..."}
-	return nil
+	return validateAjaxResult(body, "import/export take item", modern)
 }
 
 func (b *OGame) buyOfferOfTheDay() error {
 	var pageHTML []byte
 	var err error
-	v13ImportToken := ""
+	var modernToken string
 	if isOgameV13(b) {
-		// Load the trader page to grab the csrf token used to fetch the import/export view.
 		traderPage, err := b.getPageContent(url.Values{"page": {"ingame"}, "component": {"trader"}})
 		if err != nil {
 			return err
 		}
-		tokenMatch := regexp.MustCompile(`var token\s?=\s?"([^"]+)"`).FindStringSubmatch(string(traderPage))
-		if len(tokenMatch) != 2 {
-			tokenMatch = regexp.MustCompile(`token\s?=\s?"([^"]+)"`).FindStringSubmatch(string(traderPage))
-		}
-		if len(tokenMatch) != 2 {
+		match := regexp.MustCompile(`\bvar\s+token\s*=\s*"([^"]+)"`).FindSubmatch(traderPage)
+		if len(match) != 2 {
 			return errors.New("failed to extract trader token")
 		}
-		pageHTML, err = b.postPageContent(
-			url.Values{"page": {"ingame"}, "component": {"trader"}, "action": {"importexport"}, "ajax": {"1"}},
-			url.Values{"action": {"importexport"}, "token": {tokenMatch[1]}, "ajax": {"1"}},
-		)
+		body, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"trader"}, "action": {"importexport"}, "ajax": {"1"}}, url.Values{"action": {"importexport"}, "token": {string(match[1])}, "ajax": {"1"}})
 		if err != nil {
 			return err
 		}
-		// v13 wraps the import/export page in a JSON envelope: {"content":{"trader":"<html>"},"newAjaxToken":"..."}
-		var importExportResp struct {
+		if err = validateAjaxResult(body, "import/export view", false); err != nil {
+			return err
+		}
+		var envelope struct {
 			Content struct {
-				Trader string `json:"trader"`
+				Trader *string `json:"trader"`
 			} `json:"content"`
 			NewAjaxToken string `json:"newAjaxToken"`
 		}
-		if err = json.Unmarshal(pageHTML, &importExportResp); err != nil {
+		if err = json.Unmarshal(body, &envelope); err != nil {
 			return err
 		}
-		pageHTML = []byte(importExportResp.Content.Trader)
-		v13ImportToken = importExportResp.NewAjaxToken
+		if envelope.Content.Trader == nil || strings.TrimSpace(*envelope.Content.Trader) == "" {
+			return errors.New("import/export content missing")
+		}
+		if strings.TrimSpace(envelope.NewAjaxToken) == "" {
+			return errors.New("import/export token missing")
+		}
+		modernToken = envelope.NewAjaxToken
+		pageHTML = []byte(*envelope.Content.Trader)
 	} else {
 		pageHTML, err = b.postPageContent(url.Values{"page": {"ajax"}, "component": {"traderimportexport"}}, url.Values{"show": {"importexport"}, "ajax": {"1"}})
 		if err != nil {
@@ -2958,14 +2964,14 @@ func (b *OGame) buyOfferOfTheDay() error {
 	if err != nil {
 		return err
 	}
-	if isOgameV13(b) && v13ImportToken != "" {
-		importToken = v13ImportToken
+	if isOgameV13(b) {
+		importToken = modernToken
 	}
-	newAjaxToken, err := b.traderImportExportTrade(price, importToken, planetResources, multiplier)
+	nextToken, err := b.traderImportExportTrade(price, importToken, planetResources, multiplier)
 	if err != nil {
 		return err
 	}
-	return b.traderImportExportTakeItem(newAjaxToken)
+	return b.traderImportExportTakeItem(nextToken)
 }
 
 // Hack fix: When moon name is >12, the moon image disappear from the EventsBox
@@ -2986,38 +2992,52 @@ func fixAttackEvents(attacks []ogame.AttackEvent, planets []Planet) {
 }
 
 func (b *OGame) getAttacks(opts ...Option) (out []ogame.AttackEvent, err error) {
-	var pageHTML []byte
-	if isOgameV13(b) {
-		// v13 loads the event list via a JSON endpoint and wraps the html in content.eventlist
-		var by []byte
-		if by, err = b.getPageContent(url.Values{"page": {"ingame"}, "component": {"eventlist"}, "action": {"catchEvents"}, "ajax": {"1"}}); err != nil {
+	var ogVersion *version.Version
+	if ogVersion, err = version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); err == nil {
+		if isVGreaterThanOrEqual(ogVersion, "13.0.0") {
+			// OGame 13 wraps the event list HTML in a JSON response.
+			vals := url.Values{"page": {"ingame"}, "component": {"eventlist"}, "action": {"catchEvents"}, "ajax": {"1"}}
+			planets := b.getCachedPlanets()
+			ownCoords := getOwnCoordinates(planets)
+			type EventList struct {
+				Content struct {
+					Eventlist *string `json:"eventlist"`
+				} `json:"content"`
+				ServerTime   int    `json:"serverTime"`
+				NewAjaxToken string `json:"newAjaxToken"`
+			}
+			var eventListJson EventList
+			var pageHTML []byte
+			pageHTML, err = b.getPageContent(vals, opts...)
+			if err != nil {
+				return
+			}
+			if err = validateAjaxResult(pageHTML, "event list", false); err != nil {
+				return
+			}
+			if err = json.Unmarshal(pageHTML, &eventListJson); err != nil {
+				return
+			}
+			if eventListJson.Content.Eventlist == nil {
+				return nil, errors.New("event list content missing")
+			}
+			out, err = b.extractor.ExtractAttacks([]byte(*eventListJson.Content.Eventlist), ownCoords)
+			if err != nil {
+				return
+			}
+			fixAttackEvents(out, planets)
 			return
 		}
-		var eventResp struct {
-			Content struct {
-				Eventlist string `json:"eventlist"`
-			} `json:"content"`
-		}
-		if err = json.Unmarshal(by, &eventResp); err != nil {
-			return
-		}
-		pageHTML = []byte(eventResp.Content.Eventlist)
-	} else {
-		vals := url.Values{"page": {"componentOnly"}, "component": {EventListAjaxPageName}, "ajax": {"1"}}
-		var page parser.EventListAjaxPage
-		page, err = getAjaxPage[parser.EventListAjaxPage](b, vals, opts...)
-		if err != nil {
-			return
-		}
-		pageHTML = page.GetContent()
 	}
-	planets := b.getCachedPlanets()
-	ownCoords := getOwnCoordinates(planets)
-	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(pageHTML))
+
+	vals := url.Values{"page": {"componentOnly"}, "component": {EventListAjaxPageName}, "ajax": {"1"}}
+	page, err := getAjaxPage[parser.EventListAjaxPage](b, vals, opts...)
 	if err != nil {
 		return
 	}
-	out, err = b.extractor.ExtractAttacksFromDoc(doc, ownCoords)
+	planets := b.getCachedPlanets()
+	ownCoords := getOwnCoordinates(planets)
+	out, err = page.ExtractAttacks(ownCoords)
 	if err != nil {
 		return
 	}
@@ -3071,24 +3091,46 @@ func (b *OGame) galaxyInfos(galaxy, system int64, opts ...Option) (ogame.SystemI
 }
 
 func (b *OGame) getGalaxyPage(galaxy int64, system int64, opts ...Option) (*GalaxyPageContent, error) {
-	if ogVersion, err := version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); err == nil && isVGreaterThanOrEqual(ogVersion, "13.0.0") {
-		by, err := b.postPageContent(url.Values{
-			"page":      {"ingame"},
-			"component": {"galaxy"},
-			"action":    {"fetchSolarSystemData"},
-			"asJson":    {"1"},
-		}, url.Values{
-			"galaxy": {strconv.Itoa(int(galaxy))},
-			"system": {strconv.Itoa(int(system))},
-		}, opts...)
-		if err != nil {
-			return nil, err
+	if ogVersion, err := version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); err == nil {
+		if isVGreaterThanOrEqual(ogVersion, "13.0.0") {
+			// Get galaxy page content for the desired system.
+			by, err := b.postPageContent(url.Values{
+				"page":      {"ingame"},
+				"component": {"galaxy"},
+				"action":    {"fetchSolarSystemData"},
+				"asJson":    {"1"},
+			}, url.Values{
+				"galaxy": {strconv.Itoa(int(galaxy))},
+				"system": {strconv.Itoa(int(system))},
+			}, opts...)
+			if err != nil {
+				return nil, err
+			}
+			// Parse the json result, only defining the type for the GalaxyContent (Position and AvailableMissions properties).
+			var res GalaxyPageContent
+			if err = validateAjaxResult(by, "galaxy", false); err != nil {
+				return nil, err
+			}
+			var envelope struct {
+				System json.RawMessage `json:"system"`
+			}
+			if err = json.Unmarshal(by, &envelope); err != nil {
+				return nil, err
+			}
+			if len(envelope.System) == 0 || string(bytes.TrimSpace(envelope.System)) == "null" {
+				return nil, errors.New("galaxy system missing")
+			}
+			if err = json.Unmarshal(by, &res); err != nil {
+				return nil, err
+			}
+			if res.System.GalaxyContent == nil {
+				return nil, errors.New("galaxy content missing")
+			}
+			if strings.TrimSpace(res.Token) == "" {
+				return nil, errors.New("galaxy token missing")
+			}
+			return &res, nil
 		}
-		var res GalaxyPageContent
-		if err = json.Unmarshal(by, &res); err != nil {
-			return nil, err
-		}
-		return &res, nil
 	}
 
 	// Get galaxy page content for the desired system.
@@ -3107,6 +3149,9 @@ func (b *OGame) getGalaxyPage(galaxy int64, system int64, opts ...Option) (*Gala
 	}
 	// Parse the json result, only defining the type for the GalaxyContent (Position and AvailableMissions properties).
 	var res GalaxyPageContent
+	if err = validateAjaxResult(by, "galaxy", false); err != nil {
+		return nil, err
+	}
 	if err = json.Unmarshal(by, &res); err != nil {
 		return nil, err
 	}
@@ -3293,6 +3338,9 @@ func (b *OGame) getFacilities(celestialID ogame.CelestialID, options ...Option) 
 }
 
 func (b *OGame) getTechs(celestialID ogame.CelestialID) (ogame.Techs, error) {
+	if ogVersion, err := version.NewVersion(sanitizeServerVersion(b.cache.serverData.Version)); err == nil && isVGreaterThanOrEqual(ogVersion, "13.0.0") {
+		return b.getTechsFromComponents(celestialID)
+	}
 	vals := url.Values{"page": {FetchTechsName}}
 	page, err := getAjaxPage[parser.FetchTechsAjaxPage](b, vals, ChangePlanet(celestialID))
 	if err != nil {
@@ -3892,17 +3940,30 @@ func (b *OGame) sendFleet(celestialID ogame.CelestialID, ships ogame.ShipsInfos,
 	if err != nil {
 		return zeroFleet, err
 	}
-	var checkRes CheckTargetResponse
+	var checkRes struct {
+		CheckTargetResponse
+		// Preserve field presence without changing the public TargetOk bool API.
+		TargetOk json.RawMessage `json:"targetOk"`
+		Success  json.RawMessage `json:"success"`
+		Error    json.RawMessage `json:"error"`
+	}
 	if err := json.Unmarshal(by1, &checkRes); err != nil {
 		return zeroFleet, err
 	}
 
-	targetAccepted := checkRes.TargetOk || (checkRes.Status == "success" && strings.EqualFold(strings.TrimSpace(checkRes.Message), "ok"))
-	if !targetAccepted {
-		if len(checkRes.Errors) > 0 && strings.TrimSpace(checkRes.Errors[0].Message) != "" {
-			return zeroFleet, fmt.Errorf("%s (%d)", checkRes.Errors[0].Message, checkRes.Errors[0].Error)
-		}
-		if message := strings.TrimSpace(checkRes.Message); message != "" && !strings.EqualFold(message, "ok") {
+	if len(checkRes.Errors) > 0 {
+		return zeroFleet, errors.New(checkRes.Errors[0].Message + " (" + strconv.Itoa(checkRes.Errors[0].Error) + ")")
+	}
+	targetOk := string(bytes.TrimSpace(checkRes.TargetOk))
+	success := string(bytes.TrimSpace(checkRes.Success))
+	errorResult := string(bytes.TrimSpace(checkRes.Error))
+	// OGame 13 can omit targetOk. Require a positive result as well as status;
+	// retain the existing message=ok form only when success is absent.
+	targetAccepted := targetOk == "true" || (targetOk == "" && checkRes.Status == "success" &&
+		(success == "true" || (success == "" && checkRes.Message == "ok")))
+	if !targetAccepted || (checkRes.Status != "" && checkRes.Status != "success") ||
+		(success != "" && success != "true") || (errorResult != "" && errorResult != "false") {
+		if message := strings.TrimSpace(checkRes.Message); message != "" && message != "ok" {
 			return zeroFleet, errors.New(message)
 		}
 		return zeroFleet, errors.New("target is not ok")
@@ -3948,7 +4009,9 @@ func (b *OGame) sendFleet(celestialID ogame.CelestialID, ships ogame.ShipsInfos,
 	}
 
 	// Page 4 : send the fleet
-	res, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"sendFleet"}, "ajax": {"1"}, "asJson": {"1"}}, payload)
+	// A lost outcome can follow an accepted launch. The caller reconciles the
+	// fleet watermark before deciding what to do; transport retries cannot.
+	res, err := b.postPageContent(url.Values{"page": {"ingame"}, "component": {"fleetdispatch"}, "action": {"sendFleet"}, "ajax": {"1"}, "asJson": {"1"}}, payload, SkipRetry)
 	if err != nil {
 		return zeroFleet, err
 	}
@@ -4891,109 +4954,8 @@ func parseDiscoveryActionResponse(body []byte) error {
 func (b *OGame) sendDiscoveryFleet(celestialID ogame.CelestialID, coord ogame.Coordinate, options ...Option) error {
 	b.discoveryDispatchMu.Lock()
 	defer b.discoveryDispatchMu.Unlock()
-
-	// A discovery POST changes game state. Never replay it automatically after
-	// an application-level rejection: the server may still be completing the
-	// previous request and a blind retry can create a duplicate fleet.
-	return b.sendDiscoveryFleetAttempt(celestialID, coord, options...)
-}
-
-func (b *OGame) sendDiscoveryFleetAttempt(celestialID ogame.CelestialID, coord ogame.Coordinate, options ...Option) error {
-	options = append(options, ChangePlanet(celestialID))
-	// Check if the sendDiscoveryFleet button is available for the target.
-	// This checks for the envoys technology, if the planet has enough resources, if there's fleet slots available and if there's no cooldown on the position.
-	galaxyPage, err := b.getGalaxyPage(coord.Galaxy, coord.System, options...)
-	if err != nil {
-		return err
-	}
-	actionToken, err := discoveryPageToken(galaxyPage.Token)
-	if err != nil {
-		return err
-	}
-	targetFound := false
-	discoveryAvailable := false
-	for _, position := range galaxyPage.System.GalaxyContent {
-		if position.Position != coord.Position {
-			continue
-		}
-		targetFound = true
-		for _, availableMission := range position.AvailableMissions {
-			if availableMission.MissionType != ogame.SearchForLifeforms {
-				continue
-			}
-
-			errMsg := "can't send discovery mission"
-			if canSend, ok := availableMission.CanSend.(bool); ok {
-				if !canSend {
-					return errors.New(errMsg)
-				}
-				discoveryAvailable = true
-			} else if canSendStr, ok := availableMission.CanSend.(string); ok {
-				return errors.New(errMsg + ": " + canSendStr)
-			}
-		}
-		break
-	}
-	if !targetFound {
-		return errors.New("discovery target is not present in the system view")
-	}
-	if !discoveryAvailable {
-		return errors.New("discovery mission is not available for the target")
-	}
-
-	// Keep a fleet watermark before the state-changing request. If OGame
-	// answers with its normal internal redirect, an existing fleet on the same
-	// route must not be mistaken for the fleet created by this request.
-	origin, err := b.getCachedCelestialByID(celestialID)
-	if err != nil {
-		return err
-	}
-	initialFleets, _, err := b.getFleets(SkipRetry)
-	if err != nil {
-		return err
-	}
-	initialFleetIDs := discoveryFleetIDs(initialFleets, origin.GetCoordinate(), coord)
-
-	// Send fleet.
-	sendOptions := append([]Option{}, options...)
-	sendOptions = append(sendOptions, SkipRetry)
-	res, err := b.postPageContent(url.Values{
-		"page":      {"ingame"},
-		"component": {"fleetdispatch"},
-		"action":    {"sendDiscoveryFleet"},
-		"ajax":      {"1"},
-		"asJson":    {"1"},
-	}, url.Values{
-		"galaxy":   {utils.FI64(coord.Galaxy)},
-		"system":   {utils.FI64(coord.System)},
-		"position": {utils.FI64(coord.Position)},
-		// This token belongs to the system page loaded immediately above.
-		// The shared cache token may be replaced by another worker meanwhile.
-		"token": {actionToken},
-	}, sendOptions...)
-	if err != nil {
-		var redirectErr *requestRedirectError
-		if errors.As(err, &redirectErr) && redirectErr.normal {
-			if confirmErr := b.confirmDiscoveryFleetDispatched(celestialID, coord, initialFleetIDs); confirmErr == nil {
-				return nil
-			}
-		}
-		return err
-	}
-
-	if err := parseDiscoveryActionResponse(res); err != nil {
-		var pendingErr *discoveryRequestPendingError
-		if errors.As(err, &pendingErr) {
-			// Code 100 explicitly means that OGame has not finished processing
-			// the previous request. Reconcile first so a delayed successful
-			// dispatch is never duplicated by the bounded retry.
-			if confirmErr := b.confirmDiscoveryFleetDispatched(celestialID, coord, initialFleetIDs); confirmErr == nil {
-				return nil
-			}
-		}
-		return err
-	}
-	return nil
+	_, err := b.dispatchDiscoveryFleet(celestialID, coord, false, options...)
+	return err
 }
 
 func discoveryFleetIDs(fleets []ogame.Fleet, origin, destination ogame.Coordinate) map[ogame.FleetID]struct{} {
@@ -5009,79 +4971,16 @@ func discoveryFleetIDs(fleets []ogame.Fleet, origin, destination ogame.Coordinat
 	return ids
 }
 
-func (b *OGame) confirmDiscoveryFleetDispatched(celestialID ogame.CelestialID, destination ogame.Coordinate, initialFleetIDs map[ogame.FleetID]struct{}) error {
-	origin, err := b.getCachedCelestialByID(celestialID)
-	if err != nil {
-		return err
-	}
-
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		fleets, _, err := b.getFleets(SkipRetry)
-		if err == nil {
-			for _, fleet := range fleets {
-				_, wasActiveBefore := initialFleetIDs[fleet.ID]
-				if fleet.Mission == ogame.SearchForLifeforms &&
-					fleet.ID > 0 &&
-					!wasActiveBefore &&
-					!fleet.ReturnFlight &&
-					fleet.Origin.Equal(origin.GetCoordinate()) &&
-					fleet.Destination.Equal(destination) {
-					return nil
-				}
-			}
-		} else {
-			lastErr = err
-		}
-
-		if attempt < 2 {
-			timer := time.NewTimer(300 * time.Millisecond)
-			select {
-			case <-timer.C:
-			case <-b.parentCtx.Done():
-				if !timer.Stop() {
-					<-timer.C
-				}
-				return b.parentCtx.Err()
-			case <-b.ctx.Done():
-				if !timer.Stop() {
-					<-timer.C
-				}
-				return ogame.ErrBotInactive
-			}
-		}
-	}
-
-	if lastErr != nil {
-		return fmt.Errorf("unable to verify discovery fleet dispatch: %w", lastErr)
-	}
-	return errors.New("unable to verify discovery fleet dispatch")
-}
-
 func (b *OGame) sendDiscoveryFleet2(celestialID ogame.CelestialID, coord ogame.Coordinate, options ...Option) (ogame.Fleet, error) {
-	if err := b.sendDiscoveryFleet(celestialID, coord, options...); err != nil {
-		return ogame.Fleet{}, err
-	}
-	select {
-	case <-time.After(utils.RandMs(250, 500)):
-	case <-b.parentCtx.Done():
-		return ogame.Fleet{}, b.parentCtx.Err()
-	case <-b.ctx.Done():
-		return ogame.Fleet{}, ogame.ErrBotInactive
-	}
-	c, err := b.getCachedCelestial(celestialID)
-	if err != nil {
-		return ogame.Fleet{}, err
-	}
-	fleet, err := b.getLastFleetFor(c.GetCoordinate(), coord, ogame.SearchForLifeforms)
-	if err != nil {
-		return ogame.Fleet{}, err
-	}
-	return fleet, nil
+	b.discoveryDispatchMu.Lock()
+	defer b.discoveryDispatchMu.Unlock()
+	return b.dispatchDiscoveryFleet(celestialID, coord, true, options...)
 }
 
 func (b *OGame) sendSystemDiscoveryFleet(celestialID ogame.CelestialID, galaxy, system int64, options ...Option) ([]ogame.Coordinate, error) {
-	options = append(options, ChangePlanet(celestialID))
+	b.discoveryDispatchMu.Lock()
+	defer b.discoveryDispatchMu.Unlock()
+	options = append(append([]Option{}, options...), ChangePlanet(celestialID))
 	galaxyPage, err := b.getGalaxyPage(galaxy, system, options...)
 	if err != nil {
 		return nil, err
@@ -5097,11 +4996,14 @@ func (b *OGame) sendSystemDiscoveryFleet(celestialID ogame.CelestialID, galaxy, 
 	if err != nil {
 		return nil, err
 	}
-	initialFleets, _, err := b.getFleets(SkipRetry)
+	snapshot, err := b.getDiscoveryFleetSnapshot(options...)
 	if err != nil {
 		return nil, err
 	}
-	initialFleetIDs := discoveryFleetIDsForSystem(initialFleets, origin.GetCoordinate(), galaxy, system)
+	initialFleetIDs := make(map[ogame.FleetID]struct{}, len(snapshot.fleets))
+	for _, fleet := range snapshot.fleets {
+		initialFleetIDs[fleet.ID] = struct{}{}
+	}
 
 	// Send fleets.
 	res, err := b.postPageContent(url.Values{
@@ -5117,15 +5019,33 @@ func (b *OGame) sendSystemDiscoveryFleet(celestialID ogame.CelestialID, galaxy, 
 	}, append(options, SkipRetry)...)
 	if err != nil {
 		var redirectErr *requestRedirectError
-		if errors.As(err, &redirectErr) && redirectErr.normal {
-			return b.confirmSystemDiscoveryFleetDispatched(celestialID, galaxy, system, initialFleetIDs)
+		if errors.As(err, &redirectErr) && redirectErr.normal && redirectErr.statusCode == http.StatusFound && isInternalDiscoveryRedirect(redirectErr.location, b.cache.serverURL+"/game/index.php", b.cache.serverURL) {
+			return b.confirmSystemDiscoveryFleetDispatched(celestialID, galaxy, system, initialFleetIDs, options...)
 		}
 		return nil, err
 	}
-	return parseSystemDiscoveryActionResponse(res)
+	coordinates, err := parseSystemDiscoveryActionResponse(res)
+	if err != nil {
+		return nil, err
+	}
+	proven := make([]ogame.Coordinate, 0, len(coordinates))
+	for _, target := range coordinates {
+		if target.Galaxy != galaxy || target.System != system {
+			return nil, errors.New("system discovery returned coordinates outside the requested system")
+		}
+		fleet, err := b.confirmDiscoveryFleet(origin.GetCoordinate(), target, initialFleetIDs, options...)
+		if err != nil {
+			return proven, err
+		}
+		proven = append(proven, fleet.Destination)
+	}
+	return proven, nil
 }
 
 func parseSystemDiscoveryActionResponse(body []byte) ([]ogame.Coordinate, error) {
+	if err := parseDiscoveryResponse(body); err != nil {
+		return nil, err
+	}
 	var payload struct {
 		Success           *bool  `json:"success"`
 		Message           string `json:"message"`
@@ -5176,8 +5096,14 @@ func parseSystemDiscoveryActionResponse(body []byte) ([]ogame.Coordinate, error)
 	}
 
 	out := make([]ogame.Coordinate, 0, len(coordinates))
+	seen := make(map[ogame.Coordinate]bool, len(coordinates))
 	for _, resCoord := range coordinates {
-		out = append(out, ogame.NewPlanetCoordinate(resCoord.Galaxy, resCoord.System, resCoord.Position))
+		coord := ogame.NewPlanetCoordinate(resCoord.Galaxy, resCoord.System, resCoord.Position)
+		if coord.Galaxy <= 0 || coord.System <= 0 || coord.Position < 1 || coord.Position > 15 || seen[coord] {
+			return nil, errors.New("system discovery returned invalid or duplicate coordinates")
+		}
+		seen[coord] = true
+		out = append(out, coord)
 	}
 	return out, nil
 }
@@ -5194,7 +5120,7 @@ func discoveryFleetIDsForSystem(fleets []ogame.Fleet, origin ogame.Coordinate, g
 	return ids
 }
 
-func (b *OGame) confirmSystemDiscoveryFleetDispatched(celestialID ogame.CelestialID, galaxy, system int64, initialFleetIDs map[ogame.FleetID]struct{}) ([]ogame.Coordinate, error) {
+func (b *OGame) confirmSystemDiscoveryFleetDispatched(celestialID ogame.CelestialID, galaxy, system int64, initialFleetIDs map[ogame.FleetID]struct{}, options ...Option) ([]ogame.Coordinate, error) {
 	origin, err := b.getCachedCelestialByID(celestialID)
 	if err != nil {
 		return nil, err
@@ -5202,20 +5128,20 @@ func (b *OGame) confirmSystemDiscoveryFleetDispatched(celestialID ogame.Celestia
 
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		fleets, _, err := b.getFleets(SkipRetry)
+		snapshot, err := b.getDiscoveryFleetSnapshot(options...)
 		if err == nil {
 			coordinates := make([]ogame.Coordinate, 0)
 			seen := make(map[string]struct{})
-			for _, fleet := range fleets {
+			for _, fleet := range snapshot.fleets {
 				_, wasActiveBefore := initialFleetIDs[fleet.ID]
-				if fleet.Mission != ogame.SearchForLifeforms || fleet.ID <= 0 || wasActiveBefore ||
+				if fleet.Mission != ogame.SearchForLifeforms || fleet.ID <= 0 || wasActiveBefore || !snapshot.provenOutgoing[fleet.ID] ||
 					fleet.ReturnFlight || !fleet.Origin.Equal(origin.GetCoordinate()) ||
-					fleet.Destination.Galaxy != galaxy || fleet.Destination.System != system {
+					fleet.Destination.Galaxy != galaxy || fleet.Destination.System != system || fleet.Destination.Type != ogame.PlanetType {
 					continue
 				}
 				key := fmt.Sprintf("%d:%d:%d", fleet.Destination.Galaxy, fleet.Destination.System, fleet.Destination.Position)
 				if _, exists := seen[key]; exists {
-					continue
+					return nil, errors.New("system discovery is ambiguous: multiple new fleets at one target")
 				}
 				seen[key] = struct{}{}
 				coordinates = append(coordinates, fleet.Destination)
@@ -5295,12 +5221,14 @@ func availableDiscoveryPositions(galaxyPage *GalaxyPageContent, galaxy, system i
 	// Other missions can be present in the same system response and must not make
 	// the AutoDiscovery worker submit an invalid discovery request.
 	availablePositions := make([]ogame.Coordinate, 0)
+	seen := make(map[int64]bool)
 	if galaxyPage == nil {
 		return availablePositions
 	}
 	for _, position := range galaxyPage.System.GalaxyContent {
 		for _, availableMission := range position.AvailableMissions {
-			if availableMission.MissionType == ogame.SearchForLifeforms && availableMission.CanSend == true {
+			if availableMission.MissionType == ogame.SearchForLifeforms && availableMission.CanSend == true && !seen[position.Position] {
+				seen[position.Position] = true
 				availablePositions = append(availablePositions, ogame.Coordinate{Galaxy: galaxy, System: system, Position: position.Position, Type: ogame.PlanetType})
 			}
 		}

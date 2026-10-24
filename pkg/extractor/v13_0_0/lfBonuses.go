@@ -14,8 +14,7 @@ import (
 // OGame v13 reworked the lifeform bonuses page:
 //   - categories are keyed with data-toggable-target="ships" / "costreduction" / "expedition" / "characterclasses"
 //   - ship/research sub-categories are keyed directly by their ID (data-toggable="203", "114", ...)
-func extractLfBonusesFromDoc(doc *goquery.Document) (ogame.LfBonuses, error) {
-	b := ogame.NewLfBonuses()
+func extractLfBonusesFromDoc(doc *goquery.Document, b *ogame.LfBonuses) {
 	ships := doc.Find(`bonus-item-content[data-toggable-target="ships"]`).First()
 	costReduction := doc.Find(`bonus-item-content[data-toggable-target="costreduction"]`).First()
 	expedition := doc.Find(`bonus-item-content[data-toggable-target="expedition"]`).First()
@@ -40,7 +39,6 @@ func extractLfBonusesFromDoc(doc *goquery.Document) (ogame.LfBonuses, error) {
 			b.CharacterClassesBonuses.Characterclasses3 = extractBonusFromStringPercentage(match)
 		}
 	}
-	return *b, nil
 }
 
 func directLfBonusHeadings(section *goquery.Selection) *goquery.Selection {

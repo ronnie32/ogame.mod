@@ -29,7 +29,14 @@ func (e *Extractor) ExtractLfBonuses(pageHTML []byte) (ogame.LfBonuses, error) {
 
 // ExtractLfBonusesFromDoc ...
 func (e *Extractor) ExtractLfBonusesFromDoc(doc *goquery.Document) (ogame.LfBonuses, error) {
-	return extractLfBonusesFromDoc(doc)
+	// Retain bonuses independent of the renamed categories, such as experience
+	// levels, when the embedded extractor supports them.
+	bonuses, err := e.Extractor.ExtractLfBonusesFromDoc(doc)
+	if err != nil {
+		return bonuses, err
+	}
+	extractLfBonusesFromDoc(doc, &bonuses)
+	return bonuses, nil
 }
 
 // ExtractOfferOfTheDay ...
@@ -48,4 +55,8 @@ func (e *Extractor) ExtractCancelFleetToken(pageHTML []byte, fleetID ogame.Fleet
 		return "", err
 	}
 	return extractCancelFleetTokenFromDoc(doc, fleetID)
+}
+
+func (e *Extractor) ExtractOfferOfTheDayFromDoc(doc *goquery.Document) (int64, string, ogame.PlanetResources, ogame.Multiplier, error) {
+	return extractOfferOfTheDayFromDoc(doc)
 }

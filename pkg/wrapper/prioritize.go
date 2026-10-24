@@ -926,3 +926,10 @@ func (b *Prioritize) BuyResetTree(planetID ogame.PlanetID, tier int64) error {
 	defer b.done()
 	return b.bot.buyResetTree(planetID, tier)
 }
+
+// SendSystemDiscoveryFleetBounded honors an explicit discovery reservation.
+func (b *Prioritize) SendSystemDiscoveryFleetBounded(celestialID ogame.CelestialID, galaxy, system, maxFleets int64, positions []int64, options ...Option) (SystemDiscoveryResult, error) {
+	b.begin("SendSystemDiscoveryFleetBounded")
+	defer b.done()
+	return b.bot.sendSystemDiscoveryFleetBounded(celestialID, galaxy, system, maxFleets, positions, options...)
+}

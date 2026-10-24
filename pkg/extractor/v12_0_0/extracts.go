@@ -60,6 +60,17 @@ func extractHighscoreFromDoc(doc *goquery.Document) (out ogame.Highscore, err er
 	for _, s := range s.Find("#ranks tbody tr").EachIter() {
 		p := ogame.HighscorePlayer{}
 		p.Position = utils.DoParseI64(strings.TrimSpace(s.Find("td.position").Text()))
+		if p.Position == 0 {
+			// Medal positions have no numeric text. Read their rank before
+			// ignoring rows without player details so filtering cannot shift it.
+			icon := s.Find("td.position .highscorePositionIcon")
+			for rank := int64(1); rank <= 3; rank++ {
+				if icon.HasClass("position" + utils.FI64(rank)) {
+					p.Position = rank
+					break
+				}
+			}
+		}
 		p.ID = utils.DoParseI64(strings.TrimPrefix(s.AttrOr("id", "position0"), "position"))
 		p.Name = strings.TrimSpace(s.Find("span.playername").Text())
 		tdName := s.Find("td.name")
