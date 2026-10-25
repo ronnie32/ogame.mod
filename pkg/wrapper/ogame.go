@@ -1126,6 +1126,17 @@ func retryPolicyFromConfig(b *OGame, cfg Options) func(func() error) error {
 }
 
 func (b *OGame) getPageContent(vals url.Values, opts ...Option) ([]byte, error) {
+	// Galaxy player-rank links can still use the legacy page on v13 servers.
+	// Keep the focus and filters, and avoid changing the caller's query map.
+	if vals.Get("page") == "highscore" && vals.Get("component") == "" && isOgameV13(b) {
+		normalized := make(url.Values, len(vals)+1)
+		for key, values := range vals {
+			normalized[key] = append([]string(nil), values...)
+		}
+		normalized.Set("page", "ingame")
+		normalized.Set("component", "highscore")
+		vals = normalized
+	}
 	return b.pageContent(http.MethodGet, vals, nil, opts...)
 }
 
