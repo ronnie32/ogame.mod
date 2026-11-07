@@ -385,6 +385,7 @@ func start(ctx context.Context, c *cli.Command) error {
 	e.GET("/bot/language", wrapper.GetLanguageHandler)
 	e.GET("/bot/empire/type/:typeID", wrapper.GetEmpireHandler)
 	e.POST("/bot/page-content", wrapper.PageContentHandler)
+	e.POST("/bot/simulate-combat", wrapper.CombatSimulationHandler)
 	e.GET("/bot/login", wrapper.LoginHandler)
 	e.GET("/bot/logout", wrapper.LogoutHandler)
 	e.GET("/bot/username", wrapper.GetUsernameHandler)

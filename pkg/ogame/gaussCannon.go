@@ -12,7 +12,7 @@ func newGaussCannon() *gaussCannon {
 	d.StructuralIntegrity = 35000
 	d.ShieldPower = 200
 	d.WeaponPower = 1100
-	d.RapidfireFrom = map[ID]int64{DeathstarID: 50}
+	d.RapidfireFrom = map[ID]int64{DeathstarID: 50, BomberID: 5}
 	d.Requirements = map[ID]int64{ShipyardID: 6, WeaponsTechnologyID: 3, EnergyTechnologyID: 6, ShieldingTechnologyID: 1}
 	return d
 }

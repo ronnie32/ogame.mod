@@ -12,6 +12,7 @@ func newPlasmaTurret() *plasmaTurret {
 	d.StructuralIntegrity = 100000
 	d.ShieldPower = 300
 	d.WeaponPower = 3000
+	d.RapidfireFrom = map[ID]int64{BomberID: 5}
 	d.Requirements = map[ID]int64{ShipyardID: 8, PlasmaTechnologyID: 7}
 	return d
 }

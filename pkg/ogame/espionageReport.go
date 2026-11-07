@@ -13,6 +13,8 @@ type EspionageReport struct {
 	Username                     string
 	CharacterClass               CharacterClass
 	AllianceClass                AllianceClass
+	HasClassInformation          bool
+	CombatBonuses                *ReportCombatBonuses
 	LastActivity                 int64
 	CounterEspionage             int64
 	APIKey                       string
@@ -90,6 +92,19 @@ type EspionageReport struct {
 	Coordinate                   Coordinate
 	Type                         EspionageReportType
 	Date                         time.Time
+}
+
+// ReportCombatBonuses preserves reported aggregate values and missing fields.
+// Table values have the precision displayed by OGame, not hidden server precision.
+type ReportCombatBonuses struct {
+	Source string
+	Units  map[ID]ReportCombatUnitBonus
+}
+
+type ReportCombatUnitBonus struct {
+	StructuralIntegrity *float64
+	ShieldPower         *float64
+	WeaponPower         *float64
 }
 
 // ResourcesBuildings returns a ResourcesBuildings struct from the espionage report

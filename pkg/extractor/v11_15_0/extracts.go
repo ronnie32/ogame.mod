@@ -189,6 +189,8 @@ func extractEspionageReportFromDoc(doc *goquery.Document, location *time.Locatio
 	default:
 		report.AllianceClass = ogame.NoAllianceClass
 	}
+	report.HasClassInformation = reportClassKnown(characterClassJsonStr) && reportClassKnown(allianceClassJsonStr)
+	report.CombatBonuses = extractReportCombatBonuses(doc)
 
 	// Bandit, Starlord
 	banditstarlord := doc.Find("span.honorRank").First()
@@ -319,7 +321,10 @@ func extractEspionageReportFromDoc(doc *goquery.Document, location *time.Locatio
 
 	report.HasFleetInformation = rawMessageData.AttrOr("data-raw-hiddenships", "1") == ""
 	if report.HasFleetInformation {
-		fleetStr := rawMessageData.AttrOr("data-raw-fleet", "{}")
+		fleetStr := rawMessageData.AttrOr("data-raw-fleet", "")
+		if err := validateReportUnits(fleetStr, true); err != nil {
+			return report, err
+		}
 		var fleetStruct struct {
 			SmallCargo     *int64 `json:"202"`
 			LargeCargo     *int64 `json:"203"`
@@ -361,7 +366,10 @@ func extractEspionageReportFromDoc(doc *goquery.Document, location *time.Locatio
 
 	report.HasDefensesInformation = rawMessageData.AttrOr("data-raw-hiddendef", "1") == ""
 	if report.HasDefensesInformation {
-		defStr := rawMessageData.AttrOr("data-raw-defense", "{}")
+		defStr := rawMessageData.AttrOr("data-raw-defense", "")
+		if err := validateReportUnits(defStr, false); err != nil {
+			return report, err
+		}
 		var defStruct struct {
 			RocketLauncher         *int64 `json:"401"`
 			LightLaser             *int64 `json:"402"`
