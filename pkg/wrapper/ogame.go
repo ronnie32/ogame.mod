@@ -3275,10 +3275,24 @@ func (b *OGame) getDefense(celestialID ogame.CelestialID, options ...Option) (og
 }
 
 func (b *OGame) getShips(celestialID ogame.CelestialID, options ...Option) (ogame.ShipsInfos, error) {
-	options = append(options, ChangePlanet(celestialID))
-	page, err := getPage[parser.ShipyardPage](b, options...)
+	if celestialID <= 0 {
+		return ogame.ShipsInfos{}, errors.New("invalid ship inventory origin: celestial ID must be positive")
+	}
+	// An explicit origin must not depend on the planet-list cache: a missing
+	// moon there used to silently drop cp and read the currently selected body.
+	content, err := b.getPageContent(url.Values{
+		"page": {"ingame"}, "component": {ShipyardPageName}, "cp": {utils.FI64(celestialID)},
+	}, options...)
 	if err != nil {
 		return ogame.ShipsInfos{}, err
+	}
+	page, err := parser.ParsePage[parser.ShipyardPage](b.extractor, content)
+	if err != nil {
+		return ogame.ShipsInfos{}, err
+	}
+	actualID, err := page.ExtractPlanetID()
+	if err != nil || actualID != celestialID {
+		return ogame.ShipsInfos{}, fmt.Errorf("ship inventory origin mismatch: requested %d, received %d (metadata error: %v)", celestialID, actualID, err)
 	}
 	return page.ExtractShips()
 }
