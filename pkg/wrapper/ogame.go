@@ -3292,9 +3292,12 @@ func (b *OGame) getShips(celestialID ogame.CelestialID, options ...Option) (ogam
 	}
 	actualID, err := page.ExtractPlanetID()
 	if err != nil || actualID != celestialID {
+		b.cargoInventoryDiagnostic(content, celestialID, actualID, ogame.ShipsInfos{}, fmt.Errorf("origin mismatch"))
 		return ogame.ShipsInfos{}, fmt.Errorf("ship inventory origin mismatch: requested %d, received %d (metadata error: %v)", celestialID, actualID, err)
 	}
-	return page.ExtractShips()
+	ships, err := page.ExtractShips()
+	b.cargoInventoryDiagnostic(content, celestialID, actualID, ships, err)
+	return ships, err
 }
 
 func (b *OGame) getFacilities(celestialID ogame.CelestialID, options ...Option) (ogame.Facilities, error) {
